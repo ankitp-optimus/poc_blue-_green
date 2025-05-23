@@ -8,7 +8,7 @@ variables:
   tag: '$(Build.BuildId)'
   imageName: 'pocbluegreendeployment'
   acrName: 'bluegreendeployment'
-  azureSubscriptionEndpoint: 'Ankit_Service_Connection'  # 🔁 Replace with your actual ARM connection name
+  azureSubscriptionEndpoint: 'Ankit_Service_Connection'  # Replace with your actual ARM connection name
   githubRepoUrl: 'https://github.com/ankitp-optimus/poc_blue-_green.git'
 
 stages:
@@ -25,12 +25,16 @@ stages:
         git clone $(githubRepoUrl) external-src
       displayName: Clone GitHub Repo
 
+    - script: ls -l $(Build.SourcesDirectory)/external-src
+      displayName: List cloned repo contents
+
     - task: Docker@1
       displayName: Login to ACR
       inputs:
         containerRegistryType: 'Azure Container Registry'
         azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
         azureContainerRegistry: '$(acrName).azurecr.io'
+        action: 'Login'
 
     - task: Docker@1
       displayName: Build Docker Image
