@@ -1,0 +1,52 @@
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+  tag: '$(Build.BuildId)'
+  imageName: 'pocbluegreendeployment'
+  acrName: 'bluegreendeployment'
+  azureSubscriptionEndpoint: 'Ankit_Service_Connection'  # 🔁 Replace with your actual ARM connection name
+  githubRepoUrl: 'https://github.com/ankitp-optimus/poc_blue-_green.git'
+
+stages:
+- stage: Build
+  displayName: Build from GitHub Dockerfile
+  jobs:
+  - job: BuildAndPush
+    displayName: Build and Push Docker Image
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - script: |
+        echo "Cloning GitHub repository..."
+        git clone $(githubRepoUrl) external-src
+      displayName: Clone GitHub Repo
+
+    - task: Docker@1
+      displayName: Login to ACR
+      inputs:
+        containerRegistryType: 'Azure Container Registry'
+        azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
+        azureContainerRegistry: '$(acrName).azurecr.io'
+
+    - task: Docker@1
+      displayName: Build Docker Image
+      inputs:
+        containerRegistryType: 'Azure Container Registry'
+        azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
+        azureContainerRegistry: '$(acrName).azurecr.io'
+        action: 'Build an image'
+        dockerFile: '$(Build.SourcesDirectory)/external-src/dockerfile'
+        imageName: '$(acrName).azurecr.io/$(imageName):$(tag)'
+
+    - task: Docker@1
+      displayName: Push Docker Image
+      inputs:
+        containerRegistryType: 'Azure Container Registry'
+        azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
+        azureContainerRegistry: '$(acrName).azurecr.io'
+        action: 'Push an image'
+        imageName: '$(acrName).azurecr.io/$(imageName):$(tag)'
