@@ -8,12 +8,12 @@ variables:
   tag: '$(Build.BuildId)'
   imageName: 'pocbluegreendeployment'
   acrName: 'bluegreendeployment'
-  azureSubscriptionEndpoint: 'Ankit_Service_Connection'  # Replace with your actual ARM connection name
+  azureSubscriptionEndpoint: 'Ankit_Service_Connection'
   githubRepoUrl: 'https://github.com/ankitp-optimus/poc_blue-_green.git'
 
 stages:
 - stage: Build
-  displayName: Build from GitHub Dockerfile
+  displayName: Build from GitHub dockerfile
   jobs:
   - job: BuildAndPush
     displayName: Build and Push Docker Image
@@ -43,7 +43,7 @@ stages:
         azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
         azureContainerRegistry: '$(acrName).azurecr.io'
         action: 'Build an image'
-        dockerFile: '$(Build.SourcesDirectory)/external-src/dockerfile'
+        dockerFile: '$(Build.SourcesDirectory)/external-src/dockerfile'  # Lowercase filename
         imageName: '$(acrName).azurecr.io/$(imageName):$(tag)'
 
     - task: Docker@1
