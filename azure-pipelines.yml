@@ -80,7 +80,7 @@ stages:
                 -o tsv)
               echo "Current green revision: $CURRENT_GREEN"
 
-              echo "Deploying new revision with image: $(acrName).azurecr.io/$(imageName):$tag"
+              echo "Deploying new revision with image: $(acrName).azurecr.io/$(imageName):latest"
               az containerapp update \
                 --name "$(containerAppName)" \
                 --resource-group "$(resourceGroup)" \
