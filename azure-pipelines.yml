@@ -7,7 +7,7 @@ resources:
 variables:
   tag: '$(Build.BuildId)'
   imageName: 'pocbluegreendeployment'
-  acrName: 'bluegreendeployment'  # Without .azurecr.io
+  acrName: 'bluegreendeployment'
   azureSubscriptionEndpoint: 'Ankit_Service_Connection'
   containerAppName: 'poc-bluegreen-app'
   resourceGroup: 'RG_Ankit_Pathak'
@@ -39,13 +39,14 @@ stages:
             scriptType: bash
             scriptLocation: inlineScript
             inlineScript: |
+              az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
               az acr login --name $(acrName)
 
         - script: |
             cd src
             docker build -t $(acrName).azurecr.io/$(imageName):$(tag) \
                          -t $(acrName).azurecr.io/$(imageName):latest \
-                         -f DockerFile .
+                         -f Dockerfile .  # Fixed case sensitivity
           displayName: Docker Build
 
         - script: |
@@ -53,7 +54,7 @@ stages:
             docker push $(acrName).azurecr.io/$(imageName):latest
           displayName: Docker Push
 
-
+# ------------- BLUE-GREEN DEPLOYMENT STAGE ----------------
 - stage: BlueGreenDeploy
   displayName: Blue-Green Deployment
   dependsOn: Build
@@ -64,6 +65,17 @@ stages:
         vmImage: ubuntu-latest
       steps:
         - task: AzureCLI@2
+          displayName: Authenticate with Azure
+          inputs:
+            azureSubscription: $(azureSubscriptionEndpoint)
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
+              ACR_PASSWORD=$(az acr credential show --name $(acrName) --query "passwords[0].value" -o tsv)
+              echo "##vso[task.setvariable variable=ACR_PASSWORD]$ACR_PASSWORD"
+
+        - task: AzureCLI@2
           displayName: Blue-Green Deployment
           inputs:
             azureSubscription: $(azureSubscriptionEndpoint)
@@ -72,74 +84,91 @@ stages:
             inlineScript: |
               # 1. Get current traffic distribution
               echo "Current traffic distribution:"
-              CURRENT_TRAFFIC=$(az containerapp ingress traffic show \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
-                --query "[].{label:label,weight:weight}" \
-                -o tsv)
-              echo "$CURRENT_TRAFFIC"
+              az containerapp ingress traffic show \
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
+                -o table
 
-              # 2. Determine which revision is currently 'blue'
+              # 2. Get current blue revision (if exists)
               CURRENT_BLUE=$(az containerapp revision list \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
                 --query "[?labels.any(name, name == 'blue')].name" \
                 -o tsv)
               echo "Current blue revision: $CURRENT_BLUE"
 
-              # 3. Deploy new version to blue slot
-              echo "Deploying new version as blue..."
+              # 3. Deploy new version with proper ACR authentication
+              echo "Deploying new version..."
               az containerapp update \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
-                --image "$(acrName).azurecr.io/$(imageName):$(tag)" \
-                --revision-suffix "$(tag)" \
-                --set-env-vars REVISION_COMMIT_ID="$(tag)"
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
+                --image $(acrName).azurecr.io/$(imageName):$(tag) \
+                --revision-suffix $(tag) \
+                --set-env-vars REVISION_COMMIT_ID=$(tag) \
+                --registry-server $(acrName).azurecr.io \
+                --registry-username $(acrName) \
+                --registry-password "$ACR_PASSWORD"
 
-              # 4. Label new revision as blue
+              # 4. Get the exact revision name that was created
+              NEW_REVISION=$(az containerapp revision list \
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
+                --query "reverse(sort_by([?properties.createdTime], &properties.createdTime))[0].name" \
+                -o tsv)
+              echo "New revision created: $NEW_REVISION"
+
+              # 5. Label new revision as blue
               echo "Labeling new revision as blue..."
               az containerapp revision label add \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
-                --label "blue" \
-                --revision "$(containerAppName)--$(tag)"
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
+                --label blue \
+                --revision $NEW_REVISION
 
-              # 5. Swap traffic (100% to blue)
-              echo "Shifting 100% traffic to blue..."
+              # 6. Shift traffic to blue (new revision)
+              echo "Shifting traffic to blue..."
               az containerapp ingress traffic set \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
-                --label-weight "blue=100" "green=0"
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
+                --label-weight blue=100 green=0
 
-              # 6. Swap labels (make new version green, old version blue)
-              echo "Swapping labels..."
-              # Remove blue label from new revision
-              az containerapp revision label remove \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
-                --label "blue" \
-                --revision "$(containerAppName)--$(tag)"
-              
-              # Add green label to new revision
-              az containerapp revision label add \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
-                --label "green" \
-                --revision "$(containerAppName)--$(tag)"
-              
-              # Add blue label to old green revision (if exists)
+              # 7. Verify before label swap
+              echo "Current revisions before label swap:"
+              az containerapp revision list \
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
+                --query "[].{Revision:name, Labels:labels, Traffic:trafficWeight}" \
+                -o table
+
+              # 8. Swap labels (only if previous blue exists)
               if [ -n "$CURRENT_BLUE" ]; then
+                echo "Swapping labels..."
+                # Remove blue label from new revision
+                az containerapp revision label remove \
+                  --name $(containerAppName) \
+                  --resource-group $(resourceGroup) \
+                  --label blue \
+                  --revision $NEW_REVISION
+                
+                # Add green label to new revision
                 az containerapp revision label add \
-                  --name "$(containerAppName)" \
-                  --resource-group "$(resourceGroup)" \
-                  --label "blue" \
-                  --revision "$CURRENT_BLUE"
+                  --name $(containerAppName) \
+                  --resource-group $(resourceGroup) \
+                  --label green \
+                  --revision $NEW_REVISION
+                
+                # Add blue label to old revision
+                az containerapp revision label add \
+                  --name $(containerAppName) \
+                  --resource-group $(resourceGroup) \
+                  --label blue \
+                  --revision $CURRENT_BLUE
               fi
 
-              # 7. Verify final state
+              # 9. Final verification
               echo "Final revision states:"
               az containerapp revision list \
-                --name "$(containerAppName)" \
-                --resource-group "$(resourceGroup)" \
-                --query "[].{Revision:name, Active:active, TrafficWeight:trafficWeight, Labels:labels}" \
+                --name $(containerAppName) \
+                --resource-group $(resourceGroup) \
+                --query "[].{Revision:name, Labels:labels, Traffic:trafficWeight}" \
                 -o table
