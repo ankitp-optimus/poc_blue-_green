@@ -41,77 +41,12 @@ stages:
 
     - script: |
         cd src
-        docker build -t $(acrName).azurecr.io/$(imageName):$(tag) -f DockerFile .
+        docker build -t $(acrName).azurecr.io/$(imageName):$(tag) \
+                     -t $(acrName).azurecr.io/$(imageName):latest \
+                     -f DockerFile .
       displayName: Docker Build
 
     - script: |
         docker push $(acrName).azurecr.io/$(imageName):$(tag)
+        docker push $(acrName).azurecr.io/$(imageName):latest
       displayName: Docker Push
-
-# ------------- DEPLOY GREEN REVISION STAGE ----------------
-- stage: DeployGreen
-  dependsOn: Build
-  jobs:
-  - job: Deploy
-    displayName: Deploy Green Revision
-    pool:
-      vmImage: ubuntu-latest
-    steps:
-    - task: AzureCLI@2
-      inputs:
-        azureSubscription: $(azureSubscriptionEndpoint)
-        scriptType: bash
-        scriptLocation: inlineScript
-        inlineScript: |
-          az containerapp update --name $(containerAppName) \
-            --resource-group $(resourceGroup) \
-            --image $(acrName).azurecr.io/$(imageName):$(tag) \
-            --revision-suffix $(tag)
-
-          az containerapp revision label add --name $(containerAppName) \
-            --resource-group $(resourceGroup) \
-            --label green \
-            --revision $(containerAppName)--$(tag)
-
-# ------------- TEST GREEN REVISION STAGE ----------------
-- stage: TestGreen
-  dependsOn: DeployGreen
-  jobs:
-  - job: Test
-    displayName: Test Green Revision
-    pool:
-      vmImage: ubuntu-latest
-    steps:
-    - task: AzureCLI@2
-      inputs:
-        azureSubscription: $(azureSubscriptionEndpoint)
-        scriptType: bash
-        scriptLocation: inlineScript
-        inlineScript: |
-          DOMAIN=$(az containerapp env show -g $(resourceGroup) -n $(environmentName) --query properties.defaultDomain -o tsv)
-          GREEN_URL="https://$(containerAppName)---green.$DOMAIN"
-
-          echo "Hitting $GREEN_URL"
-          curl -s $GREEN_URL | grep "$(tag)"
-      displayName: Smoke Test Green Revision
-
-# ------------- SWITCH TRAFFIC STAGE ----------------
-- stage: SwitchTraffic
-  dependsOn: TestGreen
-  condition: succeeded()
-  jobs:
-  - job: Shift
-    displayName: Shift Traffic to Green
-    pool:
-      vmImage: ubuntu-latest
-    steps:
-    - task: AzureCLI@2
-      inputs:
-        azureSubscription: $(azureSubscriptionEndpoint)
-        scriptType: bash
-        scriptLocation: inlineScript
-        inlineScript: |
-          az containerapp ingress traffic set \
-            --name $(containerAppName) \
-            --resource-group $(resourceGroup) \
-            --label-weight blue=0 green=100
