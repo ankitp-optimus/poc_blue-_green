@@ -39,7 +39,7 @@ stages:
         azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
         azureContainerRegistry: '$(acrName).azurecr.io'
         action: 'Build an image'
-        dockerFile: '$(Build.SourcesDirectory)/dockerfile'
+        dockerFile: '$(Build.SourcesDirectory)/external-src/dockerfile'
         imageName: '$(acrName).azurecr.io/$(imageName):$(tag)'
 
     - task: Docker@1
