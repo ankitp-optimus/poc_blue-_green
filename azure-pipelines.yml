@@ -42,7 +42,7 @@ stages:
     # 3. Build using explicit path to dockerfile
     - script: |
         cd src
-        docker build -t $(acrName).azurecr.io/$(imageName):$(tag) -f dockerfile .
+        docker build -t $(acrName).azurecr.io/$(imageName):$(tag) -f DockerFile .
       displayName: Docker Build
 
     # 4. Push the image
