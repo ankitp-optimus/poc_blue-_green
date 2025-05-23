@@ -9,8 +9,12 @@ variables:
   imageName: 'pocbluegreendeployment'
   acrName: 'bluegreendeployment'  # Without .azurecr.io
   azureSubscriptionEndpoint: 'Ankit_Service_Connection'
+  containerAppName: 'poc-bluegreen-app'
+  resourceGroup: 'RG_Ankit_Pathak'
+  environmentName: 'aca-env'
 
 stages:
+# ------------- BUILD AND PUSH STAGE ----------------
 - stage: Build
   displayName: Build and Push
   jobs:
@@ -19,17 +23,13 @@ stages:
     pool:
       vmImage: ubuntu-latest
     steps:
-    # 1. First clone and verify the repository structure
     - script: |
         echo "Cloning repository..."
         git clone https://github.com/ankitp-optimus/poc_blue-_green.git src
-        echo "Contents of src directory:"
         ls -la src/
-        echo "Looking for dockerfile:"
         find src/ -name "dockerfile" -o -name "Dockerfile"
       displayName: Clone and Verify Structure
 
-    # 2. Login to Azure and ACR
     - task: AzureCLI@2
       displayName: Login to Azure and ACR
       inputs:
@@ -39,13 +39,79 @@ stages:
         inlineScript: |
           az acr login --name $(acrName)
 
-    # 3. Build using explicit path to dockerfile
     - script: |
         cd src
         docker build -t $(acrName).azurecr.io/$(imageName):$(tag) -f DockerFile .
       displayName: Docker Build
 
-    # 4. Push the image
     - script: |
         docker push $(acrName).azurecr.io/$(imageName):$(tag)
       displayName: Docker Push
+
+# ------------- DEPLOY GREEN REVISION STAGE ----------------
+- stage: DeployGreen
+  dependsOn: Build
+  jobs:
+  - job: Deploy
+    displayName: Deploy Green Revision
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az containerapp update --name $(containerAppName) \
+            --resource-group $(resourceGroup) \
+            --image $(acrName).azurecr.io/$(imageName):$(tag) \
+            --revision-suffix $(tag)
+
+          az containerapp revision label add --name $(containerAppName) \
+            --resource-group $(resourceGroup) \
+            --label green \
+            --revision $(containerAppName)--$(tag)
+
+# ------------- TEST GREEN REVISION STAGE ----------------
+- stage: TestGreen
+  dependsOn: DeployGreen
+  jobs:
+  - job: Test
+    displayName: Test Green Revision
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          DOMAIN=$(az containerapp env show -g $(resourceGroup) -n $(environmentName) --query properties.defaultDomain -o tsv)
+          GREEN_URL="https://$(containerAppName)---green.$DOMAIN"
+
+          echo "Hitting $GREEN_URL"
+          curl -s $GREEN_URL | grep "$(tag)"
+      displayName: Smoke Test Green Revision
+
+# ------------- SWITCH TRAFFIC STAGE ----------------
+- stage: SwitchTraffic
+  dependsOn: TestGreen
+  condition: succeeded()
+  jobs:
+  - job: Shift
+    displayName: Shift Traffic to Green
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az containerapp ingress traffic set \
+            --name $(containerAppName) \
+            --resource-group $(resourceGroup) \
+            --label-weight blue=0 green=100
