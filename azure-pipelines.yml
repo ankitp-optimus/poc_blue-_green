@@ -12,6 +12,8 @@ variables:
   containerAppName: 'poc-bluegreen-app'
   resourceGroup: 'RG_Ankit_Pathak'
   environmentName: 'aca-env'
+  blueLabel: 'blue'
+  greenLabel: 'green'
 
 stages:
 # ------------- BUILD AND PUSH STAGE ----------------
@@ -71,73 +73,73 @@ stages:
               # 1. Get current traffic distribution
               echo "Current traffic distribution:"
               CURRENT_TRAFFIC=$(az containerapp ingress traffic show \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
                 --query "[].{label:label,weight:weight}" \
                 -o tsv)
               echo "$CURRENT_TRAFFIC"
 
               # 2. Determine which revision is currently 'blue'
               CURRENT_BLUE=$(az containerapp revision list \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
-                --query "[?labels.any(name, name == '$(blueLabel)')].name" \
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
+                --query "[?labels.any(name, name == 'blue')].name" \
                 -o tsv)
               echo "Current blue revision: $CURRENT_BLUE"
 
               # 3. Deploy new version to blue slot
               echo "Deploying new version as blue..."
               az containerapp update \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
-                --image $(acrName).azurecr.io/$(imageName):$(tag) \
-                --revision-suffix $(tag) \
-                --set-env-vars REVISION_COMMIT_ID=$(tag)
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
+                --image "$(acrName).azurecr.io/$(imageName):$(tag)" \
+                --revision-suffix "$(tag)" \
+                --set-env-vars REVISION_COMMIT_ID="$(tag)"
 
               # 4. Label new revision as blue
               echo "Labeling new revision as blue..."
               az containerapp revision label add \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
-                --label $(blueLabel) \
-                --revision $(containerAppName)--$(tag)
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
+                --label "blue" \
+                --revision "$(containerAppName)--$(tag)"
 
               # 5. Swap traffic (100% to blue)
               echo "Shifting 100% traffic to blue..."
               az containerapp ingress traffic set \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
-                --label-weight $(blueLabel)=100 $(greenLabel)=0
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
+                --label-weight "blue=100" "green=0"
 
               # 6. Swap labels (make new version green, old version blue)
               echo "Swapping labels..."
               # Remove blue label from new revision
               az containerapp revision label remove \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
-                --label $(blueLabel) \
-                --revision $(containerAppName)--$(tag)
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
+                --label "blue" \
+                --revision "$(containerAppName)--$(tag)"
               
               # Add green label to new revision
               az containerapp revision label add \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
-                --label $(greenLabel) \
-                --revision $(containerAppName)--$(tag)
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
+                --label "green" \
+                --revision "$(containerAppName)--$(tag)"
               
               # Add blue label to old green revision (if exists)
               if [ -n "$CURRENT_BLUE" ]; then
                 az containerapp revision label add \
-                  --name $(containerAppName) \
-                  --resource-group $(resourceGroup) \
-                  --label $(blueLabel) \
-                  --revision $CURRENT_BLUE
+                  --name "$(containerAppName)" \
+                  --resource-group "$(resourceGroup)" \
+                  --label "blue" \
+                  --revision "$CURRENT_BLUE"
               fi
 
               # 7. Verify final state
               echo "Final revision states:"
               az containerapp revision list \
-                --name $(containerAppName) \
-                --resource-group $(resourceGroup) \
+                --name "$(containerAppName)" \
+                --resource-group "$(resourceGroup)" \
                 --query "[].{Revision:name, Active:active, TrafficWeight:trafficWeight, Labels:labels}" \
                 -o table
