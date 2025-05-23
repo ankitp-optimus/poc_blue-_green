@@ -11,10 +11,10 @@ variables:
   azureSubscriptionEndpoint: 'Ankit_Service_Connection'
   containerAppName: 'poc-bluegreen-app'
   resourceGroup: 'RG_Ankit_Pathak'
-  environmentName: 'aca-env'
+  environmentName: 'ca-env-centralindia'
 
 stages:
-# ------------- BUILD AND PUSH STAGE ----------------
+
 - stage: Build
   displayName: Build and Push
   jobs:
@@ -27,7 +27,7 @@ stages:
         echo "Cloning repository..."
         git clone https://github.com/ankitp-optimus/poc_blue-_green.git src
         ls -la src/
-        find src/ -name "dockerfile" -o -name "Dockerfile"
+        find src/ -iname "dockerfile" -o -iname "Dockerfile"
       displayName: Clone and Verify Structure
 
     - task: AzureCLI@2
@@ -41,12 +41,78 @@ stages:
 
     - script: |
         cd src
-        docker build -t $(acrName).azurecr.io/$(imageName):$(tag) \
-                     -t $(acrName).azurecr.io/$(imageName):latest \
-                     -f DockerFile .
+        docker build -t $(acrName).azurecr.io/$(imageName):$(tag) -t $(acrName).azurecr.io/$(imageName):latest -f Dockerfile .
       displayName: Docker Build
 
     - script: |
         docker push $(acrName).azurecr.io/$(imageName):$(tag)
         docker push $(acrName).azurecr.io/$(imageName):latest
       displayName: Docker Push
+
+- stage: Deploy
+  displayName: Blue-Green Deploy
+  dependsOn: Build
+  jobs:
+  - job: DeployBlueGreen
+    displayName: Deploy with Blue-Green Strategy
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+
+    - task: AzureCLI@2
+      displayName: Get current traffic weights and labels
+      inputs:
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          # Get current traffic split
+          TRAFFIC=$(az containerapp ingress traffic show --name $(containerAppName) --resource-group $(resourceGroup) --query "traffic" -o json)
+          echo "##vso[task.setvariable variable=currentTraffic]$TRAFFIC"
+
+    - task: AzureCLI@2
+      displayName: Determine current active color
+      inputs:
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo "Current traffic JSON: ${{ variables.currentTraffic }}"
+          # Determine which label has 100% traffic, fallback to blue if unknown
+          ACTIVE_COLOR=$(echo ${{ variables.currentTraffic }} | jq -r '.[] | select(.weight==100).label')
+          if [ -z "$ACTIVE_COLOR" ]; then
+            ACTIVE_COLOR="blue"
+          fi
+          echo "Active color is $ACTIVE_COLOR"
+          echo "##vso[task.setvariable variable=activeColor]$ACTIVE_COLOR"
+          # Determine next color
+          if [ "$ACTIVE_COLOR" == "blue" ]; then
+            NEXT_COLOR="green"
+          else
+            NEXT_COLOR="blue"
+          fi
+          echo "Next color is $NEXT_COLOR"
+          echo "##vso[task.setvariable variable=nextColor]$NEXT_COLOR"
+
+    - task: AzureCLI@2
+      displayName: Create new revision with next color
+      inputs:
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          NEW_COMMIT_ID=$(Build.BuildId)
+          echo "Deploying new revision with commit ID $NEW_COMMIT_ID and label $(nextColor)"
+          az containerapp update --name $(containerAppName) --resource-group $(resourceGroup) --image $(acrName).azurecr.io/$(imageName):$(tag) --revision-suffix $NEW_COMMIT_ID --set-env-vars REVISION_COMMIT_ID=$NEW_COMMIT_ID
+          az containerapp revision label add --name $(containerAppName) --resource-group $(resourceGroup) --label $(nextColor) --revision $(containerAppName)--$NEW_COMMIT_ID
+
+    - task: AzureCLI@2
+      displayName: Shift traffic to new revision
+      inputs:
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo "Switching 100% traffic to $(nextColor) and 0% to $(activeColor)"
+          az containerapp ingress traffic set --name $(containerAppName) --resource-group $(resourceGroup) --label-weight $(activeColor)=0 $(nextColor)=100
+
