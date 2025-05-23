@@ -7,50 +7,45 @@ resources:
 variables:
   tag: '$(Build.BuildId)'
   imageName: 'pocbluegreendeployment'
-  acrName: 'bluegreendeployment'
+  acrName: 'bluegreendeployment'  # Without .azurecr.io
   azureSubscriptionEndpoint: 'Ankit_Service_Connection'
-  githubRepoUrl: 'https://github.com/ankitp-optimus/poc_blue-_green.git'
 
 stages:
 - stage: Build
-  displayName: Build from GitHub dockerfile
+  displayName: Build and Push
   jobs:
   - job: BuildAndPush
-    displayName: Build and Push Docker Image
+    displayName: Docker Build and Push
     pool:
       vmImage: ubuntu-latest
     steps:
+    # 1. First clone and verify the repository structure
     - script: |
-        echo "Cloning GitHub repository..."
-        git clone $(githubRepoUrl) external-src
-      displayName: Clone GitHub Repo
+        echo "Cloning repository..."
+        git clone https://github.com/ankitp-optimus/poc_blue-_green.git src
+        echo "Contents of src directory:"
+        ls -la src/
+        echo "Looking for dockerfile:"
+        find src/ -name "dockerfile" -o -name "Dockerfile"
+      displayName: Clone and Verify Structure
 
-    - script: ls -l $(Build.SourcesDirectory)/external-src
-      displayName: List cloned repo contents
-
-    - task: Docker@1
-      displayName: Login to ACR
+    # 2. Login to Azure and ACR
+    - task: AzureCLI@2
+      displayName: Login to Azure and ACR
       inputs:
-        containerRegistryType: 'Azure Container Registry'
-        azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
-        azureContainerRegistry: '$(acrName).azurecr.io'
-        action: 'Login'
+        azureSubscription: $(azureSubscriptionEndpoint)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az acr login --name $(acrName)
 
-    - task: Docker@1
-      displayName: Build Docker Image
-      inputs:
-        containerRegistryType: 'Azure Container Registry'
-        azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
-        azureContainerRegistry: '$(acrName).azurecr.io'
-        action: 'Build an image'
-        dockerFile: '$(Build.SourcesDirectory)/external-src/dockerfile'  # Lowercase filename
-        imageName: '$(acrName).azurecr.io/$(imageName):$(tag)'
+    # 3. Build using explicit path to dockerfile
+    - script: |
+        cd src
+        docker build -t $(acrName).azurecr.io/$(imageName):$(tag) -f dockerfile .
+      displayName: Docker Build
 
-    - task: Docker@1
-      displayName: Push Docker Image
-      inputs:
-        containerRegistryType: 'Azure Container Registry'
-        azureSubscriptionEndpoint: '$(azureSubscriptionEndpoint)'
-        azureContainerRegistry: '$(acrName).azurecr.io'
-        action: 'Push an image'
-        imageName: '$(acrName).azurecr.io/$(imageName):$(tag)'
+    # 4. Push the image
+    - script: |
+        docker push $(acrName).azurecr.io/$(imageName):$(tag)
+      displayName: Docker Push
